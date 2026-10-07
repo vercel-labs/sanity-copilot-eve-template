@@ -63,6 +63,9 @@ agent/
   subagents/
     researcher/             # fresh-context web researcher (own session, web tools only)
     reviewer/               # fresh-context draft reviewer (own session)
+  tools/
+    run_researcher.ts       # structured research through the researcher subagent
+    run_reviewer.ts         # structured draft review through the reviewer subagent
       skills/writing-quality/  # its own copy of the writing-quality rubric
       sandbox.ts            # its own sandbox backend
   tools/

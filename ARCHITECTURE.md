@@ -64,10 +64,10 @@ agent/
 | Notion access | `agent/connections/notion.ts` | Connection (MCP) | Search/read/write Notion as the signed-in user; update/move tools are approval-gated, page creation is not |
 | Asset tools | `agent/tools/{upload,list,get_asset_info,download,delete}_asset.ts` | Tools | Store and manage files in Vercel Blob |
 | User preferences | `agent/tools/{get,save,clear}_user_preferences.ts` + `agent/lib/user-preferences.ts` | Tools | Per-user standing preferences in Blob, keyed to the resolved principal (never model input) |
-| Researcher subagent | `agent/subagents/researcher/` | Subagent | Fresh-context web research for facts the project's content doesn't hold; uses framework `web_search`/`web_fetch`, returns cited findings + gaps |
-| Reviewer subagent | `agent/subagents/reviewer/` | Subagent | Fresh-context, verdict-only review of a finished draft; loads the rubric from its own `writing-quality` skill copy, so the root passes only the draft and context |
+| Researcher | `agent/subagents/researcher/` + `agent/tools/run_researcher.ts` | Subagent + workflow tool | Fresh-context web research for facts the project's content doesn't hold; the workflow wrapper requests cited structured findings from the child session |
+| Reviewer | `agent/subagents/reviewer/` + `agent/tools/run_reviewer.ts` | Subagent + workflow tool | Fresh-context, verdict-only review of a finished draft; loads the rubric from its own `writing-quality` skill copy, so the root passes only the draft and context |
 
-Channels and the connections are I/O boundaries. Tools run in the app runtime (full `process.env`). Skills only add instructions to context; they are not an execution surface. The `researcher` and `reviewer` subagents each run in their own isolated child session — fresh context, none of the root's skills or connections — so the root passes what each needs in the call `message`. The reviewer is sent only the draft and any voice or audience context; it loads the rubric itself from its own copy of the `writing-quality` skill. That copy intentionally diverges from the root's where the root's version points at other root-only skills (e.g. `seo-aeo-best-practices`): the reviewer's copy declares those concerns out of scope instead.
+Channels and the connections are I/O boundaries. Tools run in the app runtime (full `process.env`). Skills only add instructions to context; they are not an execution surface. The `researcher` and `reviewer` subagents each run in their own isolated child session — fresh context, none of the root's skills or connections — so `run_researcher` and `run_reviewer` pass each child's request in the `message`. The reviewer is sent only the draft and any voice or audience context; it loads the rubric itself from its own copy of the `writing-quality` skill. That copy intentionally diverges from the root's where the root's version points at other root-only skills (e.g. `seo-aeo-best-practices`): the reviewer's copy declares those concerns out of scope instead.
 
 ## Data stores
 
@@ -87,7 +87,7 @@ There is no application database.
 | Notion (MCP) | Read source material, write long-form drafts | MCP connection to `mcp.notion.com` with user-scoped OAuth via Vercel Connect (`NOTION_CONNECTOR`) |
 | Vercel Blob | File/asset storage | `@vercel/blob`, OIDC-authenticated |
 | Vercel AI Gateway | Model access | Gateway model ids resolved through the linked project; the root model is set in `agent/agent.ts` and each subagent sets its own in `agent/subagents/<id>/agent.ts` |
-| Vercel Sandbox | Isolated runtime that holds seeded skill files | `agent/sandbox.ts` and the reviewer's own `sandbox.ts` (`vercel()` backend) |
+| Vercel Sandbox | Isolated runtime that holds seeded skill files | `agent/sandbox.ts` and the reviewer's own `sandbox.ts` (`VercelSandbox.environment()`) |
 
 ## Deployment & infrastructure
 
