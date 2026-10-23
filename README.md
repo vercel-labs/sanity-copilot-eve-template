@@ -51,7 +51,7 @@ I want to build a Slack agent with the eve framework, using the Sanity copilot t
 
 ```text
 agent/
-  agent.ts                  # model configuration, compaction, session token limits
+  agent.ts                  # model configuration, compaction, session usage limit
   instructions.md           # the agent's behavior
   channels/
     slack.ts                # Slack surface (Vercel Connect credentials)
@@ -59,15 +59,13 @@ agent/
   connections/
     sanity.ts               # Sanity MCP, user-scoped OAuth; destructive tools require approval
     notion.ts               # Notion MCP, user-scoped OAuth; page updates/moves require approval
-  sandbox.ts                # Vercel Sandbox backend
+  sandbox.ts                # Vercel Sandbox environment
   subagents/
     researcher/             # fresh-context web researcher (own session, web tools only)
+      tools/                # only web_search and web_fetch (defaultTools: false)
     reviewer/               # fresh-context draft reviewer (own session)
-  tools/
-    run_researcher.ts       # structured research through the researcher subagent
-    run_reviewer.ts         # structured draft review through the reviewer subagent
       skills/writing-quality/  # its own copy of the writing-quality rubric
-      sandbox.ts            # its own sandbox backend
+      sandbox.ts            # its own Vercel Sandbox environment
   tools/
     upload_asset.ts         # Vercel Blob: store text or binary content
     list_assets.ts          # Vercel Blob: browse stored assets
@@ -77,8 +75,11 @@ agent/
     get_user_preferences.ts   # load this user's saved preferences
     save_user_preferences.ts  # save standing preferences (per-user, principal-scoped)
     clear_user_preferences.ts # clear this user's preferences (requires approval)
+    research.ts             # delegates to the researcher; returns cited findings + gaps
+    review_draft.ts         # delegates to the reviewer; returns a verdict + issues
   lib/
     user-preferences.ts     # principal-scoped Blob key + reserved-prefix guard
+    subagent-task.ts        # runs a subagent as a resumable task with structured output
   skills/
     sanity-best-practices/              # schemas, GROQ, releases, framework integrations
     content-modeling-best-practices/    # designing and refactoring content types
@@ -114,7 +115,7 @@ export default defineRemoteAgent({
 
 3. Set `CONTENT_AGENT_URL` in this project's environment and mention the new subagent in `agent/instructions.md` so the copilot knows when to hand off.
 
-The remote agent runs in its own deployment with its own skills and connections, and it never sees this copilot's conversation history, so the copilot packs everything the writer needs into the call `message`. The result comes back as a normal tool result, the same shape as the local `researcher` and `reviewer` subagents.
+The remote agent runs in its own deployment with its own skills and connections, and it never sees this copilot's conversation history, so the copilot packs everything the writer needs into the call `message`. The writer's reply comes back as the task result. (The local `researcher` and `reviewer` are wrapped by the `research` and `review_draft` tools so their replies come back as structured data; a remote agent's reply is its text.)
 
 ## Local development
 
@@ -125,7 +126,7 @@ vercel link
 vercel env pull
 ```
 
-Then run the development server and link a model provider with `/model` in the TUI:
+Then run the development server and connect a model provider with `/login` in the TUI:
 
 ```bash
 pnpm dev

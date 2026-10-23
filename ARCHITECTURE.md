@@ -19,7 +19,7 @@ eve discovers every capability from the filesystem under `agent/`. There is no c
 
 ```text
 agent/
-  agent.ts                  # model configuration (defineAgent): compaction + session token limits
+  agent.ts                  # model configuration (defineAgent): compaction + session usage limit
   instructions.md           # base system prompt / behavior
   channels/
     slack.ts                # Slack surface; credentials via Vercel Connect
@@ -27,10 +27,12 @@ agent/
   connections/
     sanity.ts               # Sanity MCP server, user-scoped OAuth; destructive tools approval-gated
     notion.ts               # Notion MCP server, user-scoped OAuth; update/move tools approval-gated
-  sandbox.ts                # sandbox backend (Vercel Sandbox)
+  sandbox.ts                # sandbox environment (Vercel Sandbox)
   subagents/
-    researcher/             # agent.ts + instructions.md; fresh-context web researcher (web tools only)
+    researcher/             # agent.ts + instructions.md + tools/ (web_search, web_fetch only; defaultTools: false)
     reviewer/               # agent.ts + instructions.md + own skills/writing-quality copy + sandbox.ts
+                            # (both set tool: false; the root calls them through tools/research.ts
+                            #  and tools/review_draft.ts, which request structured output)
   tools/
     upload_asset.ts         # Vercel Blob: store text/binary
     list_assets.ts          # Vercel Blob: browse
@@ -57,24 +59,26 @@ agent/
 | Component | Lives in | eve primitive | Responsibility |
 | --- | --- | --- | --- |
 | Slack surface | `agent/channels/slack.ts` | Channel | Receives @mentions/DMs, threads replies, renders approvals as buttons |
-| Route auth | `agent/channels/eve.ts` | Channel | Inbound auth for the eve route; the `localDevUser` shim upgrades the dev principal to a user so user-scoped connections work in the dev TUI |
+| Route auth | `agent/channels/eve.ts` | Channel | Inbound auth for the eve route; `vercelOidc()` resolves linked developers to their own user, and the `localDevUser` fallback upgrades an unlinked dev principal to a user so user-scoped connections work in the dev TUI |
 | Agent runtime | `agent/agent.ts` + `instructions.md` | Agent | The model loop and behavior; orchestrates skills, tools, and the connections |
 | Skills | `agent/skills/<name>/` | Skill | Task-specific guidance (Sanity, content modeling, Portable Text in/out, SEO/AEO, experimentation, writing quality), loaded on demand |
 | Sanity access | `agent/connections/sanity.ts` | Connection (MCP) | Query with GROQ, inspect schemas, create/edit drafts, manage releases as the signed-in user; destructive tools (`APPROVAL_REQUIRED_TOOLS`) are approval-gated |
 | Notion access | `agent/connections/notion.ts` | Connection (MCP) | Search/read/write Notion as the signed-in user; update/move tools are approval-gated, page creation is not |
 | Asset tools | `agent/tools/{upload,list,get_asset_info,download,delete}_asset.ts` | Tools | Store and manage files in Vercel Blob |
 | User preferences | `agent/tools/{get,save,clear}_user_preferences.ts` + `agent/lib/user-preferences.ts` | Tools | Per-user standing preferences in Blob, keyed to the resolved principal (never model input) |
-| Researcher | `agent/subagents/researcher/` + `agent/tools/run_researcher.ts` | Subagent + workflow tool | Fresh-context web research for facts the project's content doesn't hold; the workflow wrapper requests cited structured findings from the child session |
-| Reviewer | `agent/subagents/reviewer/` + `agent/tools/run_reviewer.ts` | Subagent + workflow tool | Fresh-context, verdict-only review of a finished draft; loads the rubric from its own `writing-quality` skill copy, so the root passes only the draft and context |
+| Researcher subagent | `agent/subagents/researcher/` + `agent/tools/research.ts` | Subagent + workflow tool | Fresh-context web research for facts the project's content doesn't hold; has only the framework `web_search`/`web_fetch` (`defaultTools: false`, so no sandbox tools), returns cited findings + gaps |
+| Reviewer subagent | `agent/subagents/reviewer/` + `agent/tools/review_draft.ts` | Subagent + workflow tool | Fresh-context, verdict-only review of a finished draft; loads the rubric from its own `writing-quality` skill copy, so the root passes only the draft and context |
 
-Channels and the connections are I/O boundaries. Tools run in the app runtime (full `process.env`). Skills only add instructions to context; they are not an execution surface. The `researcher` and `reviewer` subagents each run in their own isolated child session — fresh context, none of the root's skills or connections — so `run_researcher` and `run_reviewer` pass each child's request in the `message`. The reviewer is sent only the draft and any voice or audience context; it loads the rubric itself from its own copy of the `writing-quality` skill. That copy intentionally diverges from the root's where the root's version points at other root-only skills (e.g. `seo-aeo-best-practices`): the reviewer's copy declares those concerns out of scope instead.
+The subagents set `tool: false`, so eve doesn't derive a model-facing tool for them. Instead the `research` and `review_draft` workflow tools (`defineWorkflowTool` with a `serve` body, via `agent/lib/subagent-task.ts`) open each child with `ctx.agent()` and request a structured result per turn with `outputSchema`, which eve no longer accepts on `defineAgent`. They behave like the derived tools otherwise: each call is a resumable task, `taskId` continues the same child, and a failed child turn fails the task.
+
+Channels and the connections are I/O boundaries. Tools run in the app runtime (full `process.env`). Skills only add instructions to context; they are not an execution surface. The `researcher` and `reviewer` subagents each run in their own isolated child session — fresh context, none of the root's skills or connections — so the root passes what each needs in the call `message`. The reviewer is sent only the draft and any voice or audience context; it loads the rubric itself from its own copy of the `writing-quality` skill. That copy intentionally diverges from the root's where the root's version points at other root-only skills (e.g. `seo-aeo-best-practices`): the reviewer's copy declares those concerns out of scope instead.
 
 ## Data stores
 
 - **Sanity** (external, user-owned): the CMS the copilot manages. All access goes through Sanity's MCP server; the agent never holds a shared Sanity credential and acts as each user via their own OAuth token.
 - **Notion** (external, user-owned): the destination for long-form drafts and the source for briefs and reference material. Also per-user OAuth, no shared credential.
 - **Vercel Blob**: object storage for exported drafts, images, and attachments. Authenticated by the project's OIDC token (no `BLOB_READ_WRITE_TOKEN`). Also holds per-user preferences under the reserved `user-preferences/<hashed-principal>.md` prefix, reachable only through the principal-scoped preference tools.
-- **Vercel Sandbox** (`/workspace/skills/...`): holds the seeded skill files the model reads. The reviewer subagent declares its own `sandbox.ts` because subagent sandboxes don't inherit from the root. Not a durable application data store.
+- **Vercel Sandbox** (`$HOME/.agents/skills/...`): holds the seeded skill files the model reads, baked into a snapshot at build time. The reviewer subagent declares its own `sandbox.ts` because subagent sandboxes don't inherit from the root, and a subagent that shares its parent's sandbox (`defineParentSandbox()`) can't bring its own skill files. Not a durable application data store.
 
 There is no application database.
 
@@ -87,7 +91,7 @@ There is no application database.
 | Notion (MCP) | Read source material, write long-form drafts | MCP connection to `mcp.notion.com` with user-scoped OAuth via Vercel Connect (`NOTION_CONNECTOR`) |
 | Vercel Blob | File/asset storage | `@vercel/blob`, OIDC-authenticated |
 | Vercel AI Gateway | Model access | Gateway model ids resolved through the linked project; the root model is set in `agent/agent.ts` and each subagent sets its own in `agent/subagents/<id>/agent.ts` |
-| Vercel Sandbox | Isolated runtime that holds seeded skill files | `agent/sandbox.ts` and the reviewer's own `sandbox.ts` (`VercelSandbox.environment()`) |
+| Vercel Sandbox | Isolated runtime that holds seeded skill files | `agent/sandbox.ts` and the reviewer's own `sandbox.ts` (`VercelSandbox.environment()`); `eve build` captures their snapshots, so local builds need a linked project (`vercel link` + `vercel env pull`) |
 
 ## Deployment & infrastructure
 
@@ -98,7 +102,7 @@ There is no application database.
 
 ## Security considerations
 
-- **Inbound route auth** (`agent/channels/eve.ts`): `[localDevUser, vercelOidc()]` rejects public browser traffic; Slack traffic is authenticated by its connector, which issues a per-user (`principalType: "user"`) principal. `localDevUser` defers the trust decision to the framework's `localDev()` and only upgrades the resolved dev principal to a user, so user-scoped connections work from the dev TUI without affecting production.
+- **Inbound route auth** (`agent/channels/eve.ts`): `[vercelOidc(), localDevUser]` rejects public browser traffic; Slack traffic is authenticated by its connector, which issues a per-user (`principalType: "user"`) principal. In the dev TUI, `vercelOidc()` runs first and resolves a linked developer's Vercel OIDC token to their own user, so each developer keeps their own Connect grants and preferences. `localDevUser` is the fallback for an unlinked session: it defers the trust decision to the framework's `localDev()` and only upgrades the resolved dev principal to a user (shared by every unlinked session), so user-scoped connections still work from the dev TUI without affecting production. It must stay after `vercelOidc()`, or the local principal shadows the real user.
 - **Outbound auth:** Sanity and Notion are both per-user OAuth via Vercel Connect (tokens resolved per call, never exposed to the model); Blob uses the project OIDC token. No API keys live in code, and `.env*` is gitignored.
 - **Human-in-the-loop:** irreversible tool actions (`delete_asset`, `clear_user_preferences`) are gated with `approval` from `eve/tools/approval`. The Sanity connection gates its destructive tools (`patch_documents`, `publish_documents`, `unpublish_documents`, `discard_drafts`, `version_discard`, `update_dataset`, `deploy_schema`, `deploy_studio`) and the Notion connection gates its update/move tools (`notion-update-pages`, `notion-move-pages`, `notion-update-data-source`, `notion-update-view`) with per-connection `approval` policies. Each renders as a Slack approve/deny button.
 - **Input hardening:** `download_asset` only fetches `*.blob.vercel-storage.com` URLs (prevents SSRF, since the `url` is model-supplied).
@@ -106,7 +110,7 @@ There is no application database.
 
 ## Development & testing
 
-- **Runtime/TUI:** `pnpm dev` (eve dev TUI; `/model` links a provider).
+- **Runtime/TUI:** `pnpm dev` (eve dev TUI; `/login` connects a provider, `/model` picks the model).
 - **Type checking:** `pnpm typecheck` (tsc).
 - **Lint/format:** `pnpm check` / `pnpm fix` (Ultracite, a Biome preset; config in `biome.jsonc`).
 - **Discovery diagnostics:** `npx eve info` (must report 0 errors / 0 warnings).
@@ -123,9 +127,9 @@ There is no application database.
 
 - **eve:** the agent framework powering this app; discovers capabilities from `agent/`.
 - **Channel:** an inbound/outbound surface (here, Slack, plus the eve route's auth config).
-- **Connection:** an external server (MCP/OpenAPI) exposed to the model; tools are called as `connection__<name>__<tool>`. Here: `sanity` and `notion`.
+- **Connection:** an external server (MCP/OpenAPI) exposed to the model; tools are called as `<connection>__<tool>` (e.g. `sanity__patch_documents`). Here: `sanity` and `notion`.
 - **Tool:** a typed action authored with `defineTool`, run in the app runtime.
 - **Skill:** a load-on-demand Markdown procedure; the packaged form requires `description` frontmatter used for routing. Here: seven skills covering Sanity work, content modeling, Portable Text conversion and serialization, SEO/AEO, experimentation, and writing quality.
-- **Subagent:** a declared agent under `agent/subagents/<id>/` that the root delegates to as a tool. It runs in its own fresh child session and inherits none of the root's skills, connections, or tools, so the root passes context in the call `message`. Here: `researcher` (web research) and `reviewer` (draft review, with its own skill copy and sandbox).
+- **Subagent:** a declared agent under `agent/subagents/<id>/` that the root delegates to through a tool (here the `research` and `review_draft` workflow tools). It runs in its own fresh child session and inherits none of the root's skills, connections, or tools, so the root passes context in the call `message`. Here: `researcher` (web research) and `reviewer` (draft review, with its own skill copy and sandbox).
 - **Vercel Connect:** brokers OAuth/credentials for Slack, Sanity, and Notion; connectors are identified by a UID.
 - **OIDC:** the project's Vercel identity token, used to authenticate Blob (and AI Gateway) without static keys.
