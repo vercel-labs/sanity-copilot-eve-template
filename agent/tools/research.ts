@@ -60,16 +60,6 @@ const RESEARCH_SCHEMA = z.object({
 });
 
 /**
- * Maximum research message length accepted, in characters.
- *
- * @remarks
- * The researcher's model router (`auto` from `eve/models`) rejects a message over 16,000
- * characters before any provider call, and its `fallback` does not cover that case. The cap
- * leaves room for the `Research depth:` prefix this tool adds.
- */
-const MAX_MESSAGE_LENGTH = 15_000;
-
-/**
  * Model-facing wrapper around the `researcher` subagent that returns structured, cited findings.
  *
  * @remarks
@@ -83,8 +73,11 @@ const MAX_MESSAGE_LENGTH = 15_000;
  * claim in a fetched source. The researcher's model is chosen per call by a decision model that
  * reads this message, so an optional `depth` is prefixed to it as an explicit routing signal:
  * `deep` steers toward the stronger research model, `quick` and `standard` toward the routine
- * one. Without `depth` the router judges from the question alone. The call blocks the root's
- * turn until the findings arrive. A failed child turn fails the call with the child's error.
+ * one. Without `depth` the router judges from the question alone. The message has no length
+ * cap: the router reads the whole message, within the decision model's own input limits, and a
+ * message that model refuses falls back to the standard research model. The call blocks the
+ * root's turn until the findings arrive. A failed child turn fails the call with the child's
+ * error.
  *
  * @see The researcher's methodology and output contract in
  * `agent/subagents/researcher/instructions.md`.
@@ -125,7 +118,6 @@ export default defineWorkflowTool({
     message: z
       .string()
       .min(1)
-      .max(MAX_MESSAGE_LENGTH)
       .describe(
         "The research question plus all relevant context and constraints. The researcher sees " +
           "nothing else."

@@ -1,7 +1,7 @@
 import { head } from "@vercel/blob";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { isReservedUrl, RESERVED_PATH_ERROR } from "#lib/reserved-paths.js";
+import { checkBlobUrl } from "#lib/blob-url.js";
 
 /**
  * Tool that fetches metadata for a Vercel Blob asset without downloading its content.
@@ -9,7 +9,8 @@ import { isReservedUrl, RESERVED_PATH_ERROR } from "#lib/reserved-paths.js";
  * @remarks
  * Authorization resolves from the ambient Vercel OIDC credentials; no `BLOB_READ_WRITE_TOKEN`
  * is required. Use it to confirm an asset exists, or to check its size or content type before
- * downloading. Returns `exists: false` when the asset is not found.
+ * downloading. Returns `exists: false` when the asset is not found. The `url` is model-supplied,
+ * so only what {@link checkBlobUrl} accepts is looked up.
  */
 export default defineTool({
   description:
@@ -22,15 +23,12 @@ export default defineTool({
    * @returns `exists: true` with the asset's metadata, or `exists: false` with an `error`.
    */
   async execute({ url }) {
-    if (isReservedUrl(url)) {
-      return {
-        error: RESERVED_PATH_ERROR,
-        exists: false,
-        url,
-      };
+    const checked = checkBlobUrl(url);
+    if (!checked.ok) {
+      return { error: checked.error, exists: false, url };
     }
     try {
-      const metadata = await head(url);
+      const metadata = await head(checked.url);
       return {
         contentType: metadata.contentType,
         exists: true,

@@ -53,6 +53,7 @@ Once deployed, @mention the bot in your Slack workspace to start working on your
 | File storage | [Vercel Blob](https://vercel.com/docs/vercel-blob) |
 | Model access | [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) |
 | Sandbox | [Vercel Sandbox](https://vercel.com/docs/sandbox) |
+| Tests | [Vitest](https://vitest.dev/), plus eve evals |
 | Lint & format | [Ultracite](https://www.ultracite.ai/) (Biome) |
 
 **Zero static keys.** Authentication runs entirely on [Vercel Connect](https://vercel.com/docs/connect) (Slack, Sanity, and Notion) and [Vercel OIDC](https://vercel.com/docs/oidc) (Vercel Blob and AI Gateway). There are no API keys or client secrets to manage in code or `.env` files: Sanity and Notion are authorized per user in the browser, and Blob and the model authenticate with the project's OIDC token. The optional [Sanity Context](#sanity-context) connection is the one exception: it uses an organization API token.
@@ -158,6 +159,7 @@ agent/
     subagent.ts             # runs one subagent turn and returns its structured result
     review-schema.ts        # reviewer verdict schema
     reserved-paths.ts       # Blob prefixes the asset tools refuse (user memory)
+    blob-url.ts             # the check a model-supplied Blob URL passes before the Blob SDK sees it
   skills/
     sanity-best-practices/              # schemas, GROQ, releases, framework integrations
     content-modeling-best-practices/    # designing and refactoring content types
@@ -169,6 +171,7 @@ agent/
 evals/
   offline/                  # mock models, no model calls
   live/                     # real models through the AI Gateway
+tests/                      # deterministic test suite: tools, connections, memory, agents (pnpm test); types (pnpm typecheck)
 shared-references/          # writing rules shared by both writing-quality copies (source of truth)
   ai-phrases-to-avoid.md
   plain-english-alternatives.md
@@ -199,6 +202,15 @@ You can chat with the agent directly in the dev TUI to test the Sanity, Notion, 
 eve deploy
 ```
 
+### Tests
+
+```bash
+pnpm test        # the deterministic suite under tests/, a few seconds
+pnpm typecheck   # tsc, which also checks the type-level tests
+```
+
+The suite (`tests/`, [Vitest](https://vitest.dev/)) never calls a model, a connector, or the Blob store. It runs each asset tool through its input and output schemas with the Blob SDK mocked, runs the URL tools against the real SDK with the network intercepted, and checks the approval policies, the memory scope, the session usage limit, and the subagent delegation. It also reads the surface eve resolves with `eve info --json`: the model, the exact tool list for the root, the tools it reports for each subagent, the skills, the routes, and the input schemas the model is shown. Type-level assertions live in `tests/types/` and are checked by `pnpm typecheck`.
+
 ### Evals
 
 ```bash
@@ -215,7 +227,7 @@ This project uses [Ultracite](https://www.ultracite.ai/) (a [Biome](https://biom
 ```bash
 pnpm check      # check formatting and lint rules
 pnpm fix        # auto-fix what is fixable
-pnpm validate   # shared-reference check, lint, typecheck, eve info, and the offline evals
+pnpm validate   # shared-reference check, lint, typecheck, tests, eve info, and the offline evals
 ```
 
 ### Setting up the connectors by hand
@@ -244,9 +256,9 @@ vercel blob create-store <name> --access private --yes
 - **Approval gates:** edit the `APPROVAL_REQUIRED_TOOLS` lists in `agent/connections/sanity.ts` and `agent/connections/notion.ts` to change which MCP tools pause for a human decision.
 - **Skills:** edit or add skills in `agent/skills/`. The reviewer keeps its own copy of `writing-quality` under `agent/subagents/reviewer/skills/`, so apply a change to `SKILL.md`, `web-content-specs.md`, or `web-writing-best-practices.md` in both copies.
 - **Shared writing rules:** edit the two files in `shared-references/` (the source of truth), then run `pnpm sync:shared`. It copies them into both `writing-quality` skills, and also runs automatically on `pnpm dev` and `pnpm build`. Never edit the synced copies directly.
-- **Models:** edit the ids in `agent/lib/models.ts`. The researcher picks between two models per call: a decision model reads the research request and routes deep work to one and routine lookups to the other (`agent/subagents/researcher/agent.ts`).
+- **Models:** edit the ids in `agent/lib/models.ts`. The copilot itself runs on Claude Fable 5.2 (`ROOT_MODEL`), which `tests/lib/models.test.ts` pins. The researcher picks between two models per call: a decision model reads the research request and routes deep work to one and routine lookups to the other (`agent/subagents/researcher/agent.ts`).
 - **Memory:** edit `agent/memory/preferences.ts` to change what counts as a preference or who gets memory.
-- **Tools:** add or change tools in `agent/tools/`. The filename is the tool name.
+- **Tools:** add or change tools in `agent/tools/`. The filename is the tool name. `tests/surface/eve-info.test.ts` pins the exact tool list, so add a new tool there, with tests for it under `tests/tools/`.
 
 The agent auto-updates as you edit these files.
 
